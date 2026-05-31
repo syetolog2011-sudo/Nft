@@ -1,1 +1,108 @@
 
+import asyncio
+import random
+from aiogram import Bot, Dispatcher, F
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, ForceReply
+from aiogram.filters import Command
+
+# ================= НАСТРОЙКИ БОТА =================
+TOKEN = "8699429595:AAFvI9mTVIFblglZZQ97lexkmFi4Ert_EYs"
+COUNTDOWN_TIME = 100  # Время на прятки в секундах (кастомное значение)
+# ==================================================
+
+bot = Bot(token=TOKEN)
+dp = Dispatcher()
+
+# Хранилище состояний игры
+games = {}
+
+def get_game_keyboard(chat_id):
+    game = games.get(chat_id)
+    if not game:
+        return None
+    
+    keyboard = []
+    for p_id, p_info in game['players'].items():
+        if p_info['status'] == 'hiding':
+            name = p_info['name']
+            keyboard.append([
+                InlineKeyboardButton(text=f" Найти {name}", callback_data=f"found:{p_id}"),
+                InlineKeyboardButton(text=f"🏳️ {name} сдался", callback_data=f"giveup:{p_id}")
+            ])
+            
+    keyboard.append([InlineKeyboardButton(text=f" Закончить игру", callback_data="stop_game")])
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+async def update_registration_text(message: Message, game: dict):
+    text = " Начинаем сбор на прятки!\n\nСписок участников:\n"
+    for i, p in enumerate(game['players'].values(), 1):
+        # Помечаем гостей, чтобы было понятно, кто с кем
+        type_tag = f" (с {p['added_by']})" if p['is_virtual'] else ""
+        text += f"{i}. {p['name']}{type_tag}\n"
+    
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=" Войти в игру", callback_data="join_game")],
+        [InlineKeyboardButton(text="➕ Добавить игрока 'Со мной'", callback_data="add_virtual")],
+        [InlineKeyboardButton(text=" Начать игру", callback_data="start_game")]
+    ])
+    await message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
+
+@dp.message(Command("hideandseek"))
+async def start_registration(message: Message):
+    chat_id = message.chat.id
+    
+    if chat_id in games and games[chat_id]['status'] != 'finished':
+        await message.reply("Игра уже запущена!")
+        return
+        
+    games[chat_id] = {
+        'status': 'registration',
+        'reg_message_id': None,
+        'seeker': None,
+        'players': {
+            str(message.from_user.id): {
+                'name': message.from_user.first_name, 
+                'status': 'hiding', 
+                'is_virtual': False,
+                'added_by': None
+            }
+        },
+        'virtual_count': 0
+    }
+    
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=" Войти в игру", callback_data="join_game")],
+        [InlineKeyboardButton(text="➕ Добавить игрока 'Со мной'", callback_data="add_virtual")],
+        [InlineKeyboardButton(text=" Начать игру", callback_data="start_game")]
+    ])
+    
+    msg = await message.answer(
+        f" Начинаем сбор на прятки!\n\n"
+        f"Список участников:\n"
+        f"1. {message.from_user.first_name}\n\n"
+        f"Жмите кнопки ниже. Таймер кастомный: {COUNTDOWN_TIME} сек.",
+        reply_markup=kb,
+        parse_mode="Markdown"
+    )
+    games[chat_id]['reg_message_id'] = msg.message_id
+
+@dp.callback_query(F.data == "join_game")
+async def join_game(callback: CallbackQuery):
+    chat_id = callback.message.chat.id
+    user_id = str(callback.from_user.id)
+    game = games.get(chat_id)
+    
+    if not game or game['status'] != 'registration':
+        return await callback.answer("Регистрация закрыта.", show_alert=True)
+        
+    if user_id in game['players']:
+        return await callback.answer("Ты уже в игре!", show_alert=True)
+        
+    game['players'][user_id] = {
+        'name': callback.from_user.first_name, 
+        'status': 'hiding', 
+        'is_virtual': False,
+        'added_by': None
+    }
+    await callback.answer("Ты в игре!")
+    await update_registration_text(callback.message, game)
